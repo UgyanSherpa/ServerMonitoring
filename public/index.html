@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Server Monitor</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+<header>
+    <h1>🖥 Personal Server Monitoring Dashboard</h1>
+    <p id="hostInfo">Loading host info…</p>
+</header>
+
+<!-- ===== Live metric cards (updated by SSE) ===== -->
+<section class="cards">
+    <div class="card"><h3>CPU</h3>       <p id="cpu">–</p></div>
+    <div class="card"><h3>RAM</h3>       <p id="mem">–</p></div>
+    <div class="card"><h3>Process Mem</h3><p id="procMem">–</p></div>
+    <div class="card"><h3>Disk (app)</h3><p id="disk">–</p></div>
+    <div class="card"><h3>Uptime</h3>    <p id="uptime">–</p></div>
+    <div class="card"><h3>Load Avg</h3>  <p id="load">–</p></div>
+</section>
+
+<!-- ===== Historical graph ===== -->
+<section>
+    <h2>Historical Usage</h2>
+    <canvas id="historyChart" height="90"></canvas>
+</section>
+
+<!-- ===== Add Service form (POST body + HTML form) ===== -->
+<section>
+    <h2>Add a service to monitor</h2>
+    <form action="/api/services" method="POST" class="inline-form">
+        <input type="text"  name="name" placeholder="Service name" required />
+        <input type="url"   name="url"  placeholder="https://example.com" required />
+        <button type="submit">Add</button>
+    </form>
+</section>
+
+<!-- ===== Services list (loaded via AJAX / fetch) ===== -->
+<section>
+    <h2>Monitored services</h2>
+    <ul id="serviceList"><li>Loading…</li></ul>
+</section>
+
+<!-- ===== Upload an icon ===== -->
+<section>
+    <h2>Upload a dashboard icon</h2>
+    <form action="/upload" method="POST" enctype="multipart/form-data" class="inline-form">
+        <input type="file" name="icon" required />
+        <button type="submit">Upload</button>
+    </form>
+</section>
+
+<!-- ===== Download CSV ===== -->
+<section>
+    <h2>Export history</h2>
+    <a href="/download/history.csv">⬇ Download metrics as CSV</a>
+</section>
+
+<footer>
+    <a href="/error">Trigger 500</a> ·
+    <a href="/does-not-exist">Trigger 404</a> ·
+    <a href="/api/metric/cpu">Route param demo</a> ·
+    <a href="/api/metrics?limit=5">Query param demo</a>
+</footer>
+
+<script>
+    /* ============================================================
+       1) Server-Sent Events — live metric cards
+       ============================================================ */
+    const evtSource = new EventSource('/api/metrics/stream');
+
+    function fmtDuration(sec) {
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        const s = sec % 60;
+        return `${h}h ${m}m ${s}s`;
+    }
+
+    evtSource.onmessage = (event) => {
+        const m = JSON.parse(event.data);
+        document.getElementById('cpu').textContent     = m.cpu + ' %';
+        document.getElementById('mem').textContent     =
+            `${m.memPercent} %  (${m.memUsedMB}/${m.memTotalMB} MB)`;
+        document.getElementById('procMem').textContent = m.processMemMB + ' MB';
+        document.getElementById('disk').textContent    = m.diskMB + ' MB';
+        document.getElementById('uptime').textContent  = fmtDuration(m.uptime);
+        document.getElementById('load').textContent    = m.loadavg;
+        document.getElementById('hostInfo').textContent =
+            `${m.hostname} · ${m.platform}`;
+
+        pushHistoryPoint(m);
+    };
+
+    /* ============================================================
+       2) Chart.js — rolling graph
+       ============================================================ */
+    const labels = [];
+    const cpuData = [];
+    const memData = [];
+
+    const chart = new Chart(document.getElementById('historyChart'), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                { label: 'CPU %',     data: cpuData, borderColor: '#e63946', tension: 0.3, pointRadius: 0 },
+                { label: 'Memory %',  data: memData, borderColor: '#457b9d', tension: 0.3, pointRadius: 0 }
+            ]
+        },
+        options: {
+            animation: false,
+            responsive: true,
+            scales: { y: { min: 0, max: 100 } }
+        }
+    });
+
+    function pushHistoryPoint(m) {
+        const t = new Date(m.timestamp).toLocaleTimeString();
+        labels.push(t); cpuData.push(m.cpu); memData.push(m.memPercent);
+        if (labels.length > 60) { labels.shift(); cpuData.shift(); memData.shift(); }
+        chart.update('none');
+    }
+
+    /* ============================================================
+       3) AJAX — Fetch service list every 3 s
+       ============================================================ */
+    async function loadServices() {
+        try {
+            const res  = await fetch('/api/services');
+            const list = await res.json();
+            const ul   = document.getElementById('serviceList');
+            if (!list.length) { ul.innerHTML = '<li>No services yet.</li>'; return; }
+
+            ul.innerHTML = list.map(s => `
+      <li>
+        <strong>${s.name}</strong> — ${s.url}
+        · <span class="status-${s.status}">${s.status}</span>
+        ${s.statusCode ? '(' + s.statusCode + ')' : ''}
+        ${s.responseTime ? s.responseTime + ' ms' : ''}
+        · <a href="/api/services/${s.id}/delete">Remove</a>
+      </li>
+    `).join('');
+        } catch (e) {
+            console.error('Failed to load services:', e);
+        }
+    }
+
+    loadServices();
+    setInterval(loadServices, 3000);
+</script>
+</body>
+</html>
